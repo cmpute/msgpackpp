@@ -1,0 +1,1 @@
+需要定义一个Python类型到msgpack类型的转换表
