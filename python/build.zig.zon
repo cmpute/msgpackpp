@@ -1,0 +1,15 @@
+.{
+    .name = .msgpackpp_python,
+    .version = "0.0.1",
+    .fingerprint = 0x57cb90eaedff1106,
+    .minimum_zig_version = "0.12.0",
+    .dependencies = .{
+        .msgpackpp = .{
+            .path = "../zig",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+    },
+}
