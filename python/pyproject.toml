@@ -1,0 +1,16 @@
+[build-system]
+requires = [
+    "setuptools>=42",
+    "wheel",
+    "ziglang"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "msgpackpp"
+version = "0.1"
+description = "A MessagePack extension module"
+authors = []
+readme = "README.md"
+requires-python = ">=3.0"
+classifiers = []
