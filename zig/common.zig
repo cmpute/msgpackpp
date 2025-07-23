@@ -41,19 +41,19 @@ pub const Marker = enum(u8) {
     map32 = 0xdf,
 };
 
-pub const ExtMarker = enum(u8) {
-    timestamp = 0xff,
-    ap_pos_int = 0xff - 1,
-    ap_neg_int = 0xff - 2,
-    ap_float = 0xff - 3,
-    ap_decimal = 0xff - 4,
-    bit_array = 0xff - 5,
-    packed_msg = 0xff - 8,
-    deflated_msg = 0xff - 9,
-    num_1d_arry = 0xff - 10,
-    num_2d_array = 0xff - 11,
-    num_3d_array = 0xff - 12,
-    num_nd_array = 0xff - 13,
+pub const ExtMarker = enum(i8) {
+    timestamp = -1,
+    ap_pos_int = -2,
+    ap_neg_int = -3,
+    ap_float = -4,
+    ap_decimal = -5,
+    bit_array = -6,
+    packed_msg = -9,
+    deflated_msg = -10,
+    num_1d_arry = -11,
+    num_2d_array = -12,
+    num_3d_array = -13,
+    num_nd_array = -14,
 };
 
 /// Define all the type tags within msgpackpp

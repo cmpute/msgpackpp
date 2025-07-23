@@ -228,6 +228,35 @@ pub fn WriteStream(
         pub fn beginMap() void {} // TODO
         pub fn endMap() void {} // TODO
 
+        pub fn beginExt(self: *Self, length: u64, type_tag: i8) Error!void {
+            if (length < 16 and type_tag >= -8 and type_tag < 8) {
+                const tag_hi: u8 = @intCast(length);
+                const tag_lo: u8 = @bitCast(type_tag & 0xf);
+                try self.stream.writeByte(@intFromEnum(Marker.fixExt));
+                try self.stream.writeByte(tag_hi << 4 | tag_lo);
+            } else {
+                if (length < (1 << 8)) {
+                    try self.stream.writeByte(@intFromEnum(Marker.ext8));
+                    try self.stream.writeByte(@intCast(length));
+                } else if (length < (1 << 16)) {
+                    try self.stream.writeByte(@intFromEnum(Marker.ext16));
+                    try self.stream.writeInt(u16, @intCast(length), big_endian);
+                } else if (length < (1 << 32)) {
+                    try self.stream.writeByte(@intFromEnum(Marker.ext32));
+                    try self.stream.writeInt(u32, @intCast(length), big_endian);
+                } else {
+                    try self.stream.writeByte(@intFromEnum(Marker.ext64));
+                    try self.stream.writeInt(u64, @intCast(length), big_endian);
+                }
+                try self.stream.writeByte(@bitCast(type_tag));
+            }
+
+            try self.pushContainer(ContainerStatus{ .ext = length });
+        }
+        pub fn endExt(self: *Self) Error!void {
+            self.popContainer(ContainerStatus{ .ext = 0 });
+        }
+
         /// Reduce the remaining size of the container at the stack top, return if the top container should be removed.
         fn shrinkContainer(self: *Self, size: usize) void {
             const status = self.peekStack() orelse return;
@@ -287,36 +316,28 @@ pub fn WriteStream(
                         // cast to u128 before packing to reduce memory usage
                         const pack = packIntTight(@as(u128, @intCast(value)));
                         const bytes = pack.buf[pack.start..];
-                        try self.stream.writeByte(@intFromEnum(Marker.fixExt));
-                        const tag_hi: u8 = @intCast(bytes.len);
-                        const tag_lo: u8 = @intFromEnum(ExtMarker.ap_pos_int) & 0xf;
-                        try self.stream.writeByte(tag_hi << 4 | tag_lo);
+                        try self.beginExt(bytes.len, @intFromEnum(ExtMarker.ap_pos_int));
                         try self.stream.writeAll(bytes);
+                        try self.endExt();
                     } else {
                         const total_bytes: u16 = (int_type.bits - @clz(value) + 7) / 8; // largest int type supported in Zig has 2^16 -1 bytes
-                        if (total_bytes < 256) {
-                            try self.stream.writeByte(@intFromEnum(Marker.ext8));
-                            try self.stream.writeByte(@intCast(total_bytes));
-                            try self.stream.writeByte(@intFromEnum(ExtMarker.ap_pos_int));
-                        } else {
-                            try self.stream.writeByte(@intFromEnum(Marker.ext16));
-                            try self.stream.writeByte(@intCast(total_bytes >> 8));
-                            try self.stream.writeByte(@intCast(total_bytes & 0xff));
-                            try self.stream.writeByte(@intFromEnum(ExtMarker.ap_pos_int));
-                        }
+                        try self.beginExt(total_bytes, @intFromEnum(ExtMarker.ap_pos_int));
 
                         // serialize 64 bits at a time
                         var start: std.math.Log2Int(T) = @intCast(total_bytes - total_bytes % 8);
                         if (total_bytes % 8 > 0) {
                             const pack = packIntTight(@as(u64, @intCast(value >> (8 * start))));
                             const bytes = pack.buf[pack.start..];
-                            try self.stream.writeAll(bytes);
+                            try self.writeBytes(bytes);
                         }
                         while (start > 0) {
                             start -= 8;
                             const segment: u64 = @truncate(value >> (8 * start));
                             try self.stream.writeInt(u64, segment, big_endian);
+                            self.shrinkContainer(8);
                         }
+
+                        try self.endExt();
                     }
 
                     self.valueDone();
@@ -412,10 +433,9 @@ pub fn WriteStream(
             }
         }
 
-        pub fn writeBytes(self: *Self, value: []u8) Error!void {
-            // TODO: support write bytes when bin and ext
-            _ = self;
-            _ = value;
+        pub fn writeBytes(self: *Self, value: []const u8) Error!void {
+            try self.stream.writeAll(value);
+            self.shrinkContainer(value.len);
         }
     };
 }
