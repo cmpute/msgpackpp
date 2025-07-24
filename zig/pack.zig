@@ -223,6 +223,7 @@ pub fn WriteStream(
         }
         pub fn endArray(self: *Self) Error!void {
             self.popContainer(ContainerStatus{ .array = 0 });
+            self.valueDone();
         }
 
         pub fn beginMap() void {} // TODO
@@ -255,6 +256,7 @@ pub fn WriteStream(
         }
         pub fn endExt(self: *Self) Error!void {
             self.popContainer(ContainerStatus{ .ext = 0 });
+            self.valueDone();
         }
 
         /// Reduce the remaining size of the container at the stack top, return if the top container should be removed.
@@ -289,58 +291,66 @@ pub fn WriteStream(
             const T = @TypeOf(value);
             switch (@typeInfo(T)) {
                 .int => |int_type| {
-                    if (value < (1 << 8)) {
-                        if (value < (1 << 7)) {
-                            // fixnum
-                            try self.stream.writeByte(@intFromEnum(Marker.fixPos) + @as(u8, @intCast(value)));
+                    if (value >= 0 and value < (1 << 7)) {
+                        // positive fixnum
+                        try self.stream.writeByte(@as(u8, @intCast(value)));
+                        self.valueDone();
+                    } else if (value < 0 and value >= (-1 << 5)) {
+                        // negative fixnum
+                        try self.stream.writeByte(@bitCast(@as(i8, @intCast(value))));
+                        self.valueDone();
+                    } else if (int_type.signedness == .signed) {
+                        // signed integers
+                        if (value >= (-1 << 63) and value < (1 << 63)) {
+                            // small integers
+                            if (value >= (-1 << 7) and value < (1 << 7)) {
+                                // signed 8
+                                try self.stream.writeByte(@intFromEnum(Marker.int8));
+                                try self.stream.writeInt(i8, @intCast(value), big_endian);
+                            } else if (value >= (-1 << 15) and value < (1 << 15)) {
+                                // signed 16
+                                try self.stream.writeByte(@intFromEnum(Marker.int16));
+                                try self.stream.writeInt(i16, @intCast(value), big_endian);
+                            } else if (value >= (-1 << 31) and value < (1 << 31)) {
+                                // signed 32
+                                try self.stream.writeByte(@intFromEnum(Marker.int32));
+                                try self.stream.writeInt(i32, @intCast(value), big_endian);
+                            } else {
+                                // signed 64
+                                try self.stream.writeByte(@intFromEnum(Marker.int64));
+                                try self.stream.writeInt(i64, @intCast(value), big_endian);
+                            }
+                            self.valueDone();
                         } else {
-                            // unsigned 8
-                            try self.stream.writeByte(@intFromEnum(Marker.uint8));
-                            try self.stream.writeByte(@as(u8, @intCast(value)));
+                            try self.writeApInt(std.meta.Int(.unsigned, int_type.bits), @abs(value), true);
                         }
-                    } else if (value < (1 << 64)) {
-                        if (value < (1 << 16)) {
-                            // unsigned 16
-                            try self.stream.writeByte(@intFromEnum(Marker.uint16));
-                            try self.stream.writeInt(u16, @intCast(value), big_endian);
-                        } else if (value < (1 << 32)) {
-                            // unsigned 32
-                            try self.stream.writeByte(@intFromEnum(Marker.uint32));
-                            try self.stream.writeInt(u32, @intCast(value), big_endian);
-                        } else {
-                            // unsigned 64
-                            try self.stream.writeByte(@intFromEnum(Marker.uint64));
-                            try self.stream.writeInt(u64, @intCast(value), big_endian);
-                        }
-                    } else if (value < (1 << 120)) {
-                        // cast to u128 before packing to reduce memory usage
-                        const pack = packIntTight(@as(u128, @intCast(value)));
-                        const bytes = pack.buf[pack.start..];
-                        try self.beginExt(bytes.len, @intFromEnum(ExtMarker.ap_pos_int));
-                        try self.stream.writeAll(bytes);
-                        try self.endExt();
                     } else {
-                        const total_bytes: u16 = (int_type.bits - @clz(value) + 7) / 8; // largest int type supported in Zig has 2^16 -1 bytes
-                        try self.beginExt(total_bytes, @intFromEnum(ExtMarker.ap_pos_int));
-
-                        // serialize 64 bits at a time
-                        var start: std.math.Log2Int(T) = @intCast(total_bytes - total_bytes % 8);
-                        if (total_bytes % 8 > 0) {
-                            const pack = packIntTight(@as(u64, @intCast(value >> (8 * start))));
-                            const bytes = pack.buf[pack.start..];
-                            try self.writeBytes(bytes);
+                        // unsigned integers
+                        if (value < (1 << 64)) {
+                            // small integers
+                            if (value < (1 << 8)) {
+                                // unsigned 8
+                                try self.stream.writeByte(@intFromEnum(Marker.uint8));
+                                try self.stream.writeByte(@as(u8, @intCast(value)));
+                            } else if (value < (1 << 16)) {
+                                // unsigned 16
+                                try self.stream.writeByte(@intFromEnum(Marker.uint16));
+                                try self.stream.writeInt(u16, @intCast(value), big_endian);
+                            } else if (value < (1 << 32)) {
+                                // unsigned 32
+                                try self.stream.writeByte(@intFromEnum(Marker.uint32));
+                                try self.stream.writeInt(u32, @intCast(value), big_endian);
+                            } else {
+                                // unsigned 64
+                                try self.stream.writeByte(@intFromEnum(Marker.uint64));
+                                try self.stream.writeInt(u64, @intCast(value), big_endian);
+                            }
+                            self.valueDone();
+                        } else {
+                            try self.writeApInt(T, value, false);
                         }
-                        while (start > 0) {
-                            start -= 8;
-                            const segment: u64 = @truncate(value >> (8 * start));
-                            try self.stream.writeInt(u64, segment, big_endian);
-                            self.shrinkContainer(8);
-                        }
-
-                        try self.endExt();
                     }
 
-                    self.valueDone();
                     return;
                 },
                 .comptime_int => {
@@ -433,9 +443,50 @@ pub fn WriteStream(
             }
         }
 
+        pub fn writeApInt(self: *Self, IntType: type, value: IntType, neg: bool) Error!void {
+            const int_info = @typeInfo(IntType).int;
+            comptime std.debug.assert(int_info.signedness == .unsigned);
+            std.debug.assert(value >= (1 << 63) or value < (-1 << 63));
+
+            const tag = if (neg) @intFromEnum(ExtMarker.ap_neg_int) else @intFromEnum(ExtMarker.ap_pos_int);
+            if (value < (1 << 120)) {
+                // cast to u128 before packing to reduce memory usage
+                const pack = packIntTight(@as(u128, @intCast(value)));
+                const bytes = pack.buf[pack.start..];
+                try self.beginExt(bytes.len, tag);
+                try self.stream.writeAll(bytes);
+                try self.endExt();
+            } else {
+                const total_bytes: u16 = (int_info.bits - @clz(value) + 7) / 8; // largest int type supported in Zig has 2^16 -1 bytes
+                try self.beginExt(total_bytes, tag);
+
+                // serialize 64 bits at a time
+                var start: std.math.Log2Int(IntType) = @intCast(total_bytes - total_bytes % 8);
+                if (total_bytes % 8 > 0) {
+                    const pack = packIntTight(@as(u64, @intCast(value >> (8 * start))));
+                    const bytes = pack.buf[pack.start..];
+                    try self.writeBytes(bytes);
+                }
+                while (start > 0) {
+                    start -= 8;
+                    const segment: u64 = @truncate(value >> (8 * start));
+                    try self.stream.writeInt(u64, segment, big_endian);
+                    self.shrinkContainer(8);
+                }
+
+                try self.endExt();
+            }
+        }
+
         pub fn writeBytes(self: *Self, value: []const u8) Error!void {
             try self.stream.writeAll(value);
             self.shrinkContainer(value.len);
+        }
+
+        pub fn writeString(self: *Self, value: []const u8) Error!void {
+            _ = self;
+            _ = value;
+            // TODO
         }
     };
 }
