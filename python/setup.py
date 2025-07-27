@@ -29,12 +29,19 @@ class build_ext_zig(build_ext):
         build_cmd = [
             'python', '-m', 'ziglang', 'build',
             f'-DPYTHON_INCLUDE_DIR={python_include}',
-            f'-DPYTHON_LIBS_DIR={python_libs}'
+            f'-DPYTHON_LIBS_DIR={python_libs}',
+            '--release=fast',
         ]
         subprocess.check_call(build_cmd, cwd=ext.package_path)
 
         out_path = Path(ext.package_path, "zig-out/bin/msgpackpp_python.dll").resolve()
         shutil.copy(out_path, ext_path)
+        pdb_path = out_path.with_suffix('.pdb')
+        if pdb_path.exists():
+            shutil.copy(pdb_path, ext_path.with_suffix('.pdb'))
+
+        # TODO: support non-release build
+        # TODO: detect Python debug build and pass this tag to zig
 
 
 setup(

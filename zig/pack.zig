@@ -1,5 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
+const panic = std.debug.panic;
 const native_endian = @import("builtin").target.cpu.arch.endian();
 const big_endian = std.builtin.Endian.big;
 const little_endian = std.builtin.Endian.little;
@@ -22,13 +23,9 @@ const ContainerStatus = union(enum) {
 };
 
 pub const PackOptions = struct {
-    /// Arrays/slices of u8 are typically encoded as JSON strings.
+    /// Arrays/slices of u8 are typically encoded as strings.
     /// This option emits them as arrays of numbers instead.
-    /// Does not affect calls to `objectField*()`.
     emit_strings_as_arrays: bool = false,
-
-    /// Should unicode characters be escaped in strings?
-    escape_unicode: bool = false,
 
     /// When true, renders numbers outside the range `+-1<<53` (the precise integer range of f64) as JSON strings in base 10.
     emit_nonportable_numbers_as_strings: bool = false,
@@ -116,8 +113,8 @@ pub fn WriteStream(
 
         pub const Stream = OutStream;
         pub const Error = switch (safety_checks) {
-            .checked_to_arbitrary_depth => Stream.Error || error{OutOfMemory},
-            .checked_to_fixed_depth, .assumed_correct => Stream.Error,
+            .checked_to_arbitrary_depth => Stream.Error || error{ OutOfMemory, ValueTooLong },
+            .checked_to_fixed_depth, .assumed_correct => Stream.Error || error{ValueTooLong},
         };
 
         options: PackOptions,
@@ -197,26 +194,43 @@ pub fn WriteStream(
                     self.nesting_stack.size -= 1;
                     top = self.nesting_stack.data[self.nesting_stack.size];
                 },
-                .assumed_correct => {},
+                .assumed_correct => return, // no-ops
             }
 
             // FIXME: why zig doesn't support top == expect?
             switch (expect) {
-                .array => assert(top == .array),
-                .bin => assert(top == .bin),
-                .str => assert(top == .str),
-                .map => assert(top == .map),
-                .ext => assert(top == .ext),
-                .empty => assert(top == .empty),
+                .array => if (top != .array) {
+                    panic("unexpected stack top when packing array", .{});
+                },
+                .bin => if (top != .bin) {
+                    panic("unexpected stack top when packing binary", .{});
+                },
+                .str => if (top != .str) {
+                    panic("unexpected stack top when packing string", .{});
+                },
+                .map => if (top != .map) {
+                    panic("unexpected stack top when packing mapping", .{});
+                },
+                .ext => if (top != .ext) {
+                    panic("unexpected stack top when packing extension", .{});
+                },
+                .empty => if (top != .empty) {
+                    panic("unexpected empty", .{});
+                },
             }
         }
 
         pub fn beginArray(self: *Self, length: u32) Error!void {
             try switch (length) {
-                0 => self.stream.writeByte(@intFromEnum(Marker.fixArray)),
-                1...15 => self.stream.writeByte(@intFromEnum(Marker.fixArray) + @as(u8, @intCast(length))),
-                16...((1 << 16) - 1) => self.stream.writeByte(@intFromEnum(Marker.array16)),
-                (1 << 16)...((1 << 32) - 1) => self.stream.writeByte(@intFromEnum(Marker.array32)),
+                0...15 => self.stream.writeByte(@intFromEnum(Marker.fixArray) | @as(u8, @intCast(length))),
+                16...((1 << 16) - 1) => {
+                    try self.stream.writeByte(@intFromEnum(Marker.array16));
+                    try self.stream.writeInt(u16, @intCast(length), big_endian);
+                },
+                (1 << 16)...((1 << 32) - 1) => {
+                    try self.stream.writeByte(@intFromEnum(Marker.array32));
+                    try self.stream.writeInt(u32, @intCast(length), big_endian);
+                },
             };
 
             try self.pushContainer(ContainerStatus{ .array = length });
@@ -226,8 +240,25 @@ pub fn WriteStream(
             self.valueDone();
         }
 
-        pub fn beginMap() void {} // TODO
-        pub fn endMap() void {} // TODO
+        pub fn beginMap(self: *Self, length: u32) Error!void {
+            try switch (length) {
+                0...15 => self.stream.writeByte(@intFromEnum(Marker.fixMap) | @as(u8, @intCast(length))),
+                16...((1 << 16) - 1) => {
+                    try self.stream.writeByte(@intFromEnum(Marker.map16));
+                    try self.stream.writeInt(u16, @intCast(length), big_endian);
+                },
+                (1 << 16)...((1 << 32) - 1) => {
+                    try self.stream.writeByte(@intFromEnum(Marker.map32));
+                    try self.stream.writeInt(u32, @intCast(length), big_endian);
+                },
+            };
+
+            try self.pushContainer(ContainerStatus{ .map = 2 * @as(u33, @intCast(length)) });
+        }
+        pub fn endMap(self: *Self) Error!void {
+            self.popContainer(ContainerStatus{ .map = 0 });
+            self.valueDone();
+        }
 
         pub fn beginExt(self: *Self, length: u64, type_tag: i8) Error!void {
             if (length < 16 and type_tag >= -8 and type_tag < 8) {
@@ -282,7 +313,7 @@ pub fn WriteStream(
             }
         }
 
-        fn valueDone(self: *Self) void {
+        inline fn valueDone(self: *Self) void {
             self.shrinkContainer(1);
         }
 
@@ -404,25 +435,27 @@ pub fn WriteStream(
                             return self.write(value.*);
                         },
                     },
-                    // .many, .slice => {
-                    //     if (ptr_info.size == .many and ptr_info.sentinel() == null)
-                    //         @compileError("unable to stringify type '" ++ @typeName(T) ++ "' without sentinel");
-                    //     const slice = if (ptr_info.size == .many) std.mem.span(value) else value;
-                    //
-                    //     if (ptr_info.child == u8) {
-                    //         // This is a []const u8, or some similar Zig string.
-                    //         if (!self.options.emit_strings_as_arrays and std.unicode.utf8ValidateSlice(slice)) {
-                    //             return self.stringValue(slice);
-                    //         }
-                    //     }
-                    //
-                    //     try self.beginArray();
-                    //     for (slice) |x| {
-                    //         try self.write(x);
-                    //     }
-                    //     try self.endArray();
-                    //     return;
-                    // },
+                    .many, .slice => {
+                        if (ptr_info.size == .many and ptr_info.sentinel() == null)
+                            @compileError("unable to pack type '" ++ @typeName(T) ++ "' without sentinel");
+                        const slice = if (ptr_info.size == .many) std.mem.span(value) else value;
+
+                        if (ptr_info.child == u8) {
+                            // This is a []const u8, or some similar Zig string.
+                            if (!self.options.emit_strings_as_arrays and std.unicode.utf8ValidateSlice(slice)) {
+                                return self.writeString(slice);
+                            } else {
+                                return self.writeBinary(slice);
+                            }
+                        }
+
+                        try self.beginArray();
+                        for (slice) |x| {
+                            try self.write(x);
+                        }
+                        try self.endArray();
+                        return;
+                    },
                     else => @compileError("Unable to stringify type '" ++ @typeName(T) ++ "'"),
                 },
                 .array => {
@@ -465,7 +498,7 @@ pub fn WriteStream(
                 if (total_bytes % 8 > 0) {
                     const pack = packIntTight(@as(u64, @intCast(value >> (8 * start))));
                     const bytes = pack.buf[pack.start..];
-                    try self.writeBytes(bytes);
+                    try self.writeRaw(bytes);
                 }
                 while (start > 0) {
                     start -= 8;
@@ -478,15 +511,44 @@ pub fn WriteStream(
             }
         }
 
-        pub fn writeBytes(self: *Self, value: []const u8) Error!void {
+        pub fn writeRaw(self: *Self, value: []const u8) Error!void {
             try self.stream.writeAll(value);
             self.shrinkContainer(value.len);
         }
 
+        pub fn writeBinary(self: *Self, value: []const u8) Error!void {
+            if (value.len < (1 << 8)) {
+                try self.stream.writeByte(@intFromEnum(Marker.bin8));
+                try self.stream.writeByte(@intCast(value.len));
+            } else if (value.len < (1 << 16)) {
+                try self.stream.writeByte(@intFromEnum(Marker.bin16));
+                try self.stream.writeInt(u16, @intCast(value.len), big_endian);
+            } else if (value.len < (1 << 32)) {
+                try self.stream.writeByte(@intFromEnum(Marker.bin32));
+                try self.stream.writeInt(u32, @intCast(value.len), big_endian);
+            } else {
+                try self.stream.writeByte(@intFromEnum(Marker.ext64));
+                try self.stream.writeInt(u64, @intCast(value.len), big_endian);
+            }
+            try self.stream.writeAll(value);
+        }
+
         pub fn writeString(self: *Self, value: []const u8) Error!void {
-            _ = self;
-            _ = value;
-            // TODO
+            if (value.len < 32) {
+                try self.stream.writeByte(@intFromEnum(Marker.fixStr) | @as(u8, @intCast(value.len)));
+            } else if (value.len < (1 << 8)) {
+                try self.stream.writeByte(@intFromEnum(Marker.str8));
+                try self.stream.writeByte(@intCast(value.len));
+            } else if (value.len < (1 << 16)) {
+                try self.stream.writeByte(@intFromEnum(Marker.str16));
+                try self.stream.writeInt(u16, @intCast(value.len), big_endian);
+            } else if (value.len < (1 << 32)) {
+                try self.stream.writeByte(@intFromEnum(Marker.str32));
+                try self.stream.writeInt(u32, @intCast(value.len), big_endian);
+            } else {
+                return Self.Error.ValueTooLong;
+            }
+            try self.stream.writeAll(value);
         }
     };
 }
