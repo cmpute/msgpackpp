@@ -197,26 +197,8 @@ pub fn WriteStream(
                 .assumed_correct => return, // no-ops
             }
 
-            // FIXME: why zig doesn't support top == expect?
-            switch (expect) {
-                .array => if (top != .array) {
-                    panic("unexpected stack top when packing array", .{});
-                },
-                .bin => if (top != .bin) {
-                    panic("unexpected stack top when packing binary", .{});
-                },
-                .str => if (top != .str) {
-                    panic("unexpected stack top when packing string", .{});
-                },
-                .map => if (top != .map) {
-                    panic("unexpected stack top when packing mapping", .{});
-                },
-                .ext => if (top != .ext) {
-                    panic("unexpected stack top when packing extension", .{});
-                },
-                .empty => if (top != .empty) {
-                    panic("unexpected empty", .{});
-                },
+            if (!std.meta.eql(top, expect)) {
+                panic("unexpected stack top, expect: {any}, get: {any}", .{ expect, top });
             }
         }
 
@@ -297,7 +279,7 @@ pub fn WriteStream(
                 .empty => unreachable,
                 .array, .str => |*len| {
                     const s = @as(u32, @intCast(size));
-                    assert(len.* >= s); // TODO: produce error set?
+                    assert(len.* >= s);
                     len.* -= s;
                 },
                 .map => |*len| {
@@ -487,7 +469,7 @@ pub fn WriteStream(
                 const pack = packIntTight(@as(u128, @intCast(value)));
                 const bytes = pack.buf[pack.start..];
                 try self.beginExt(bytes.len, tag);
-                try self.stream.writeAll(bytes);
+                try self.writeRaw(bytes);
                 try self.endExt();
             } else {
                 const total_bytes: u16 = (int_info.bits - @clz(value) + 7) / 8; // largest int type supported in Zig has 2^16 -1 bytes
@@ -531,6 +513,7 @@ pub fn WriteStream(
                 try self.stream.writeInt(u64, @intCast(value.len), big_endian);
             }
             try self.stream.writeAll(value);
+            self.valueDone();
         }
 
         pub fn writeString(self: *Self, value: []const u8) Error!void {
@@ -549,6 +532,7 @@ pub fn WriteStream(
                 return Self.Error.ValueTooLong;
             }
             try self.stream.writeAll(value);
+            self.valueDone();
         }
     };
 }

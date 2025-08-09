@@ -16,15 +16,15 @@ pub const MemorySink = struct {
             .buffer = Buffer.init(allocator),
         };
     }
-    pub fn deinit(self: *Self) void {
+    pub inline fn deinit(self: *Self) void {
         self.buffer.deinit();
     }
-    pub fn writer(self: *Self) Buffer.Writer {
+    pub inline fn writer(self: *Self) Buffer.Writer {
         return self.buffer.writer();
     }
 
     // return a Python bytes object
-    pub fn getBytes(self: *const Self) [*c]py.PyObject {
+    pub inline fn getBytes(self: *const Self) [*c]py.PyObject {
         // data are copied
         return py.PyBytes_FromStringAndSize(self.buffer.items.ptr, @intCast(self.buffer.items.len));
     }

@@ -15,15 +15,16 @@ pub fn build(b: *std.Build) !void {
     });
 
     const python_include = b.option([]const u8, "PYTHON_INCLUDE_DIR", "the include folder of python") orelse {
-        const fail = b.addFail("requires -DPYTHON_INCLUDE_DIR argment.");
-        b.getInstallStep().dependOn(&fail.step);
-        return;
+        return error.PythonArgsMissing;
     };
     const python_libs = b.option([]const u8, "PYTHON_LIBS_DIR", "the library folder of python") orelse {
-        const fail = b.addFail("requires -DPYTHON_LIBS_DIR argument.");
-        b.getInstallStep().dependOn(&fail.step);
-        return;
+        return error.PythonArgsMissing;
     };
+    const python_debug = b.option(bool, "PYTHON_DEBUG", "whether the python intepreter was built in debug mode") orelse {
+        return error.PythonArgsMissing;
+    };
+    const use_limited_api = b.option(bool, "use-limited-api", "use the limited api only") orelse false;
+    _ = .{ python_debug, use_limited_api }; // TODO: use them
 
     lib.addIncludePath(std.Build.LazyPath{ .cwd_relative = python_include });
     lib.addLibraryPath(std.Build.LazyPath{ .cwd_relative = python_libs });

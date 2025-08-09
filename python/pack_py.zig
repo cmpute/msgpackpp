@@ -24,11 +24,13 @@ fn packPyLongLarge(comptime OutStream: type, object: *py.PyObject, packer: *Writ
     const bit_length = py.PyObject_CallMethod(object, "bit_length", null) orelse {
         return error.CallingError;
     };
+    defer Py_DECREF(bit_length, @src());
     const byte_length = @divFloor(py.PyLong_AsLongLong(bit_length) + 7, 8);
     const byte_order = "big";
     const bytes_obj = py.PyObject_CallMethod(object, "to_bytes", "Ls", byte_length, byte_order) orelse {
         return error.CallingError;
     };
+    defer Py_DECREF(bytes_obj, @src());
 
     // pack bytes as ext
     const length: u64 = @intCast(py.PyBytes_Size(bytes_obj));
@@ -91,10 +93,17 @@ fn packPyString(comptime OutStream: type, object: *py.PyObject, packer: *WriteSt
     const bytes = py.PyUnicode_AsUTF8String(object) orelse {
         return error.CallingError;
     };
+    defer Py_DECREF(bytes, @src());
 
     const length: u64 = @intCast(py.PyBytes_Size(bytes));
     const ptr: [*]u8 = @ptrCast(py.PyBytes_AsString(bytes));
     try packer.writeString(ptr[0..length]);
+}
+
+fn packPyBytes(comptime OutStream: type, object: *py.PyObject, packer: *WriteStream(OutStream)) PackError(OutStream)!void {
+    const length: u64 = @intCast(py.PyBytes_Size(object));
+    const ptr: [*]u8 = @ptrCast(py.PyBytes_AsString(object));
+    try packer.writeBinary(ptr[0..length]);
 }
 
 fn packPySequence(comptime OutStream: type, object: *py.PyObject, packer: *WriteStream(OutStream)) PackError(OutStream)!void {
@@ -109,7 +118,7 @@ fn packPySequence(comptime OutStream: type, object: *py.PyObject, packer: *Write
             try packAny(OutStream, py.PyList_GetItem(object, py_i), packer);
         }
     } else if (py.PyTuple_Check(object) != 0) {
-        // TODO: shortcut for PyTuple
+        // shortcut for PyTuple
         for (0..len) |i| {
             const py_i: isize = @intCast(i);
             // FIXME: use PyTuple_GET_ITEM when Zig is ready
@@ -118,7 +127,10 @@ fn packPySequence(comptime OutStream: type, object: *py.PyObject, packer: *Write
     } else {
         // fallback to normal PySequence API
         for (0..len) |i| {
-            try packAny(OutStream, py.PySequence_GetItem(object, @intCast(i)), packer);
+            const item = py.PySequence_GetItem(object, @intCast(i));
+            defer Py_DECREF(item, @src());
+
+            try packAny(OutStream, item, packer);
         }
     }
 
@@ -142,6 +154,7 @@ fn packPyMapping(comptime OutStream: type, object: *py.PyObject, packer: *WriteS
     } else {
         // fallback to normal PyMapping API
         const items = py.PyMapping_Items(object);
+        defer Py_DECREF(items, @src());
         for (0..len) |i| {
             const py_i: isize = @intCast(i);
             // FIXME: use PyList_GET_ITEM when Zig is ready
@@ -155,24 +168,26 @@ fn packPyMapping(comptime OutStream: type, object: *py.PyObject, packer: *WriteS
 }
 
 // TODO: accept an option flag to select default float or int precisions
-fn packAny(comptime OutStream: type, object: *py.PyObject, packer: *WriteStream(OutStream)) !void {
-    // TODO: integers -> floats -> str -> bytes -> bool -> none -> array -> dict
+fn packAny(comptime OutStream: type, object: *py.PyObject, packer: *WriteStream(OutStream)) PackError(OutStream)!void {
+    // order: integers -> floats -> bool -> none -> str -> bytes -> array -> dict
     if (py.PyLong_CheckExact(object) != 0) {
         // deal with integers
         try packPyLong(OutStream, object, packer);
     } else if (py.PyFloat_Check(object) != 0) {
         // deal with floats
         try packPyFloat(OutStream, object, packer);
-    } else if (object.ob_type == &py.PyUnicode_Type) {
-        // deal with string
-        // TODO: use PyUnicode_Check when there is an tag to lift limited API use
-        try packPyString(OutStream, object, packer);
     } else if (object.ob_type == &py.PyBool_Type) {
         // deal with boolean
         try packPyBool(OutStream, object, packer);
     } else if (object == py.Py_None()) {
         // deal with None
         try packer.write(null);
+    } else if (object.ob_type == &py.PyUnicode_Type) {
+        // deal with string
+        // TODO: use PyUnicode_Check when there is an tag to lift limited API use
+        try packPyString(OutStream, object, packer);
+    } else if (object.ob_type == &py.PyBytes_Type) {
+        try packPyBytes(OutStream, object, packer);
     } else if (py.PySequence_Check(object) != 0) {
         // deal with sequences
         try packPySequence(OutStream, object, packer);
@@ -219,10 +234,15 @@ pub fn packAnyToBytes(self: [*c]py.PyObject, args: [*c]py.PyObject) callconv(.C)
 
     var stream = impl.writeStream(writer, .{});
     packAny(@TypeOf(writer), src, &stream) catch |err| {
-        // TODO: raise Python error
-        std.debug.print("Error: {}\n", .{err});
-        py.Py_IncRef(py.Py_None());
-        return py.Py_None();
+        switch (err) {
+            error.CallingError => py.PyErr_SetString(py.PyExc_RuntimeError, "inner error happened"),
+            error.IncorrectType,
+            => py.PyErr_SetString(py.PyExc_TypeError, "incorrect type specified"),
+            error.UnsupportedType => py.PyErr_SetString(py.PyExc_NotImplementedError, "unsupported python type"),
+            error.OutOfMemory => py.PyErr_SetString(py.PyExc_MemoryError, "out of memory"),
+            error.ValueTooLong => py.PyErr_SetString(py.PyExc_ValueError, "item being too long"),
+        }
+        return null;
     };
 
     const bytes: *py.PyObject = sink.getBytes();
