@@ -1,5 +1,3 @@
-// TODO: define two io, bytes and file. exposed API should be compatible with msgpack
-
 const py = @import("python.zig").py;
 const std = @import("std");
 
@@ -25,9 +23,9 @@ pub const MemorySink = struct {
 
     // return a Python bytes object
     pub inline fn getBytes(self: *const Self) [*c]py.PyObject {
-        // data are copied
+        // data are copied, this is a common strategy used in CPython aswell.
         return py.PyBytes_FromStringAndSize(self.buffer.items.ptr, @intCast(self.buffer.items.len));
     }
 };
 
-const FileSink = struct {};
+const FileSink = struct {}; // implement to support directly write into a file

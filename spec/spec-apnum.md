@@ -35,6 +35,10 @@ There are two arbitrary precision integer types defined in MessagePack++, one fo
 decimal float ap_dec: m*10^e
 binary float ap_float: m*2^e
 
-each contains two part, first is an unsigned integer representing exponent `e` packed by MessagePack++, second is the binary representation of mantissa `m`, whose length can be deducted from the total length.
+each contains three parts, first is an info byte (1bit sign + 1bit large exponent flag + 6bit exponent or exp length), second is the normalized exponent with length specified in the info byte, third is the binary representation of mantissa `m`, whose length can be deducted from the total length.
+
+the exponent is normalized in this way:
+if the base is 2, it's added with a bias of 2^(n-1), where n is the number of bits in the mantissa;
+if the base is 10, it's added with a bias of 2^(z-1), where z is approximately log10(2^n).
 
 定长的float（fp16, bf16等）和decimal（IEEE decimal32 decimal64等）暂不做统一支持（因为非常用的浮点数标准一直在变），用户可以选择利用apfloat/apdecimal，或者使用自定义ext编号

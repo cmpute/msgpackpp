@@ -9,10 +9,12 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+
     const impl_lib = b.dependency("msgpackpp", .{
         .target = target,
         .optimize = optimize,
     });
+    lib.root_module.addImport("msgpackpp", impl_lib.module("msgpackpp"));
 
     const python_include = b.option([]const u8, "PYTHON_INCLUDE_DIR", "the include folder of python") orelse {
         return error.PythonArgsMissing;
@@ -30,7 +32,6 @@ pub fn build(b: *std.Build) !void {
     lib.addLibraryPath(std.Build.LazyPath{ .cwd_relative = python_libs });
     lib.linkLibC();
     lib.linkSystemLibrary("python3");
-    lib.root_module.addImport("msgpackpp", impl_lib.module("msgpackpp"));
 
     b.installArtifact(lib);
 }

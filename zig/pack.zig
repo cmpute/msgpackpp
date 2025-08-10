@@ -27,8 +27,12 @@ pub const PackOptions = struct {
     /// This option emits them as arrays of numbers instead.
     emit_strings_as_arrays: bool = false,
 
-    /// When true, renders numbers outside the range `+-1<<53` (the precise integer range of f64) as JSON strings in base 10.
-    emit_nonportable_numbers_as_strings: bool = false,
+    /// When true, integers are converted to apint if they can be represented in a more compact way.
+    emit_compact_integers: bool = false,
+
+    /// When true, the packer is forced to be compatible with the vanilla MsgPack format.
+    /// The limitations include: 1. packing ext types is prohibited; 2. packing complex numbers is prohibited; 3. packing bin 64 is prohibited.
+    compatible_mode: bool = false,
 };
 
 /// Pack an unsigned integer into buffer (in little-endian order) and return how many bytes are necessary
