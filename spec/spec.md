@@ -1,3 +1,5 @@
+> beta version, not yet released.
+
 # MessagePack++ specification
 
 MessagePack++ (abbr. msgpack++ or msgpackpp) is an object serialization specification like JSON, derived from vanilla MessagePack.
@@ -101,18 +103,22 @@ Nil          | nil
 Boolean      | bool format family (false or true)
 Float        | float format family (float 32/64) and apfloat extension family
 String       | str format family (fixstr or str 8/16/32)
-Binary       | bin format family (bin 8/16/32)
+Binary       | bin format family (bin 8/16/32/64)
 Array        | array format family (fixarray or array 16/32)
 Map          | map format family (fixmap or map 16/32)
-Extension    | ext format family (fixext or ext 8/16/32)
+Extension    | ext format family (fixext or ext 8/16/32/64)
 
 If an object can be represented in multiple possible output formats, serializers SHOULD use the format which represents the data in the smallest number of bytes.
 
 ### Recommended behavior for MessagePack compatbile mode
 
-Serialize complex / bin 64 / ext 64: throw error for old version
-Serialize fixext: force user to explicitly specify the msgpack version
-Serialize other types: same as before
+- Serialize complex / bin 64 / ext 64: throw error for old version
+- Serialize fixext: convert to normal ext 8
+- Serialize other types: same as before
+
+### File extension
+
+If an object serialized by msgpackpp is to be stored in a file, the object should be wrapped by the packed_msg or deflate_msg format (see [their definitons here](./spec-ext.md#Container%20extension%20types)). The recommended file extension for msgpackpp data is `.mppk`.
 
 ## Deserialization: format to type conversion
 
@@ -125,13 +131,12 @@ nil                                                                  | Nil
 false and true                                                       | Boolean
 float 32/64                                                          | Float
 fixstr and str 8/16/32                                               | String
-bin 8/16/32                                                          | Binary
+bin 8/16/32/64                                                       | Binary
 fixarray and array 16/32                                             | Array
 fixmap map 16/32                                                     | Map
-fixext and ext 8/16/32                                               | Extension
-
+fixext and ext 8/16/32/64                                            | Extension
 
 ### Recommended behavior for MessagePack compatbile mode
 
-Deserialize complex / bin 64 / ext 64 / fixext: force user to explicitly specify the msgpack version
-Deserialize other types: same as before
+- Deserialize data with type `0xd4`~`0xd8`: throw an error;
+- Deserialize other types: same as before
